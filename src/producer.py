@@ -17,13 +17,7 @@ load_dotenv()
 JAKARTA_TZ = pytz.timezone('Asia/Jakarta')
 
 # Redpanda config
-import socket
-try:
-    socket.gethostbyname('redpanda-broker')
-    REDPANDA_BROKER = os.getenv('REDPANDA_BROKER', 'redpanda-broker:9092')
-except:
-    REDPANDA_BROKER = os.getenv('REDPANDA_BROKER', 'localhost:9092')
-    
+REDPANDA_BROKER = os.getenv('REDPANDA_BROKER', 'localhost:9092')
 TOPIC = 'crypto-prices'
 
 # CoinGecko API

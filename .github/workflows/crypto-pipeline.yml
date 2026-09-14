@@ -18,6 +18,8 @@ jobs:
           --health-retries 5
         ports:
           - 9092:9092
+        env:
+          REDPANDA_ADVERTISED_ADDRESSES: localhost:9092
     
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +33,13 @@ jobs:
         run: pip install -q -r requirements.txt
       
       - name: Run Producer
+        env:
+          REDPANDA_BROKER: localhost:9092
         run: cd src && timeout 60 python producer.py
       
       - name: Run Consumer
+        env:
+          REDPANDA_BROKER: localhost:9092
         run: cd src && timeout 60 python consumer.py
       
       - name: Run Query

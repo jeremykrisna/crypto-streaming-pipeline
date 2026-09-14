@@ -38,7 +38,6 @@ crypto-streaming-pipeline/
 │   ├── consumer.py          # Consume messages, store in SQLite
 │   ├── query.py             # Analytics queries on SQLite
 │   └── requirements.txt      # Python dependencies
-├── airflow/                 # (Deprecated—use manual/serverless instead)
 ├── docker-compose.yml       # Container orchestration
 ├── .env                     # Environment variables
 ├── .github/workflows/       # GitHub Actions (setup only)

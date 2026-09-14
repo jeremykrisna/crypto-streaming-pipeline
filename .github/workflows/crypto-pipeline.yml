@@ -31,10 +31,10 @@ jobs:
         run: pip install -q -r requirements.txt
       
       - name: Run Producer
-        run: cd src && timeout 30 python producer.py
+        run: cd src && timeout 60 python producer.py
       
       - name: Run Consumer
-        run: cd src && timeout 20 python consumer.py
+        run: cd src && timeout 60 python consumer.py
       
       - name: Run Query
         run: cd src && python query.py

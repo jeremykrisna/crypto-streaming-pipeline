@@ -38,7 +38,7 @@ def fetch_crypto_prices():
         response = requests.get(
             COINGECKO_API_URL, 
             params=params, 
-            timeout=10,
+            timeout=30,
             verify=False
         )
         response.raise_for_status()
@@ -87,7 +87,7 @@ def main():
     print(f"Starting Crypto Producer...")
     print(f"Broker: {REDPANDA_BROKER}")
     print(f"Topic: {TOPIC}")
-    print(f"Fetching prices every 10 seconds (Jakarta time)...\n")
+    print(f"Fetching prices every 30 seconds (Jakarta time)...\n")
     
     try:
         producer = KafkaProducer(
@@ -103,7 +103,7 @@ def main():
             print(f"\n[{datetime.now(JAKARTA_TZ).isoformat()}] Fetching prices...")
             prices = fetch_crypto_prices()
             publish_prices(producer, prices)
-            time.sleep(10)
+            time.sleep(30)
     
     except KeyboardInterrupt:
         print("\n\nShutting down producer...")

@@ -53,7 +53,7 @@ def get_previous_price(conn, symbol):
         SELECT price FROM {TABLE_NAME} 
         WHERE symbol = ? 
         ORDER BY timestamp DESC 
-        LIMIT 2 OFFSET 1
+        LIMIT 1 OFFSET 1
     """, (symbol,))
     result = cursor.fetchone()
     return result[0] if result else None
@@ -119,15 +119,22 @@ def insert_message(conn, message_json):
         ))
         
         conn.commit()
-        print(f"✓ Inserted {symbol}: \${price}")
+        print(f"✓ Inserted {symbol}: ${price}")
         
-        # Check price alert
+        # DEBUG: Check previous price
         previous_price = get_previous_price(conn, symbol)
+        print(f"  DEBUG: Previous {symbol} price = {previous_price}")
+        
         if previous_price:
             change = calculate_change_percent(price, previous_price)
+            print(f"  DEBUG: Change = {change:.2f}%")
             if change >= PRICE_THRESHOLD:
                 print(f"  🚨 ALERT: {symbol} changed {change:.2f}%!")
                 send_slack_alert(symbol, price, previous_price, change)
+            else:
+                print(f"  DEBUG: No alert (below {PRICE_THRESHOLD}%)")
+        else:
+            print(f"  DEBUG: Not enough data for {symbol}")
     
     except Exception as e:
         print(f"ERROR: Failed to insert message: {e}")

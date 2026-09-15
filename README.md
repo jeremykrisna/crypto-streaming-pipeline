@@ -1,264 +1,357 @@
-# Real-Time Crypto Streaming Pipeline
+Real-Time Crypto Streaming Pipeline
 
-A production-grade, end-to-end data streaming pipeline that ingests cryptocurrency prices in real-time, demonstrates Kafka-style message brokering, and provides observability through modern monitoring tools.
+A production-grade, end-to-end data streaming pipeline that ingests cryptocurrency prices in real-time, demonstrates Kafka-style message brokering, provides real-time price alerts, and includes monitoring dashboards.
 
-## Problem Statement
-
-Building a streaming data infrastructure from scratch is non-trivial. Most tutorials either oversimplify (single-threaded scripts) or assume prior experience with distributed systems. This project bridges that gap by implementing a **real, working pipeline** that handles:
-
-- **Real-time data ingestion** from a public API
-- **Reliable message brokering** with Kafka-compatible broker
-- **Persistent storage** with atomic inserts
-- **Monitoring & observability** from day one
-- **Graceful error handling** and retry logic
-
-The goal: demonstrate full-stack data engineering skills with a portfolio-ready project.
-
-## Solution Architecture
-
-```
-┌─────────────────┐
-│  CoinGecko API  │  (Live crypto prices)
-└────────┬────────┘
-         │
-    ┌────▼──────────────────────────────────┐
-    │  Producer (Python)                    │
-    │  • 10-sec polling                     │
-    │  • SSLContext bypass (corp proxy)     │
-    │  • Timezone-aware timestamps          │
-    └────────┬─────────────────────────────┘
-             │
-    ┌────────▼──────────────────────────────┐
-    │  Redpanda Broker                      │
-    │  • Kafka-compatible                   │
-    │  • Topic: crypto-prices               │
-    │  • Metrics endpoint: :9644            │
-    └────────┬──────────────────────────────┘
-             │
-    ┌────────▼──────────────────────────────┐
-    │  Consumer (Python)                    │
-    │  • Group-based consumption            │
-    │  • SQLite atomic inserts              │
-    │  • Graceful shutdown (Ctrl+C)         │
-    └────────┬──────────────────────────────┘
-             │
-    ┌────────▼──────────────────────────────┐
-    │  SQLite Database (crypto.db)          │
-    │  • Schema: id, timestamp, symbol,     │
-    │    price, currency, inserted_at       │
-    └────────┬──────────────────────────────┘
-             │
-    ┌────────▼──────────────────────────────┐
-    │  Monitoring Stack                     │
-    │  • Prometheus (metrics scraping)      │
-    │  • Grafana (dashboards)               │
-    │  • Real-time Redpanda observability   │
-    └───────────────────────────────────────┘
-```
-
-## Key Design Decisions
-
-### 1. Redpanda over Kafka
-- **Why**: Drop-in Kafka replacement, lower resource footprint, faster to stand up
-- **Trade-off**: Less mature ecosystem than Kafka, but sufficient for this scale
-
-### 2. SQLite for Persistence
-- **Why**: Zero setup, ACID guarantees, sufficient for ~100K messages/month
-- **Pain point discovered**: SQLite locks with Airflow SequentialExecutor (see Learnings)
-- **Alternative rejected**: DuckDB (wheel compilation failed on Windows)
-
-### 3. Docker Compose for Orchestration
-- **Why**: Simple, reproducible, works cross-platform
-- **Rejected Airflow**: Too complex for this use case (see Airflow Complexity section)
-
-### 4. Prometheus + Grafana
-- **Why**: Industry standard observability, built-in Redpanda metrics, zero-config Grafana dashboards
-- **Learned**: Grafana's label filtering has parsing quirks on some versions
-
-## Technical Highlights
-
-### Producer (`src/producer.py`)
-- Fetches BTC/ETH/SOL prices every 10 seconds from CoinGecko
-- Custom SSL context for corporate proxy environments
-- Timezone-aware timestamps (Asia/Jakarta)
-- Exponential backoff on API failures
-- Publishes 3 messages/cycle (~86K messages/month)
-
-### Consumer (`src/consumer.py`)
-- Subscribes to `crypto-consumer-group`
-- Atomic inserts to SQLite with `PRAGMA journal_mode = WAL`
-- Tracks `committed_offset` per cycle
-- Handles graceful shutdown without message loss
-
-### Query Analytics (`src/query.py`)
-- Aggregates price statistics (latest, avg, min, max)
-- Hourly bucketing (note: SQLite TEXT timestamp limitation)
-- Formatted table output via `tabulate`
-
-### Monitoring
-- Prometheus scrapes Redpanda metrics every 15 seconds
-- Grafana dashboard tracks:
-  - Kafka request handlers (produce/fetch/offset_commit)
-  - Active log segments
-  - Partition count growth
-  - Broker uptime
-
-## What Went Well ✅
-
-| Challenge | Outcome |
-|-----------|---------|
-| **Windows Docker networking** | Solved: Use `localhost:9092` locally, `redpanda-broker:9092` inside containers |
-| **Python dependency compilation** | Solved: Switched from `confluent-kafka` → `kafka-python` (pure Python, no C ext) |
-| **Real-time pipeline debugging** | Solved: `rpk topic consume` directly from container |
-| **End-to-end data validation** | Solved: Query validates message count matches DB inserts |
-| **Observability from day 1** | Win: Prometheus + Grafana running before core code finished |
-
-## What Failed & Why ❌
-
-### Airflow Orchestration (ABANDONED)
-**Attempted**: Use Apache Airflow to schedule producer/consumer DAGs
-
-**Problems encountered**:
-1. **SQLite locking**: Airflow SequentialExecutor (no Postgres) causes database locks
-2. **Volume mounting conflicts**: `airflow_data:/opt/airflow` volume overrides bind mounts
-3. **Dependency hell**: Python package versions (Flask, Werkzeug) conflicted
-4. **Windows-specific**: WSL2 networking added another layer of complexity
-
-**Decision**: Abandoned for this project scope. Producer/consumer run as standalone services instead.
-
-**Lesson**: Orchestration frameworks have high complexity overhead. For simple polling pipelines, Kubernetes CronJobs or serverless functions are lighter-weight.
-
-### DuckDB (REJECTED)
-**Attempted**: Use DuckDB instead of SQLite for better analytics
-
-**Problem**: Wheel build failed on Windows. No pre-built binary available.
-
-**Decision**: Fell back to SQLite (already built into Python).
-
-**Lesson**: Always vet Windows binary availability before adding dependencies. Linux-first projects often fail on Windows.
-
-## Learnings & Principles
-
-### 1. Windows Compilation Constraints
-- Avoid C extension dependencies (`confluent-kafka`, `DuckDB`)
-- Stick with pure Python libraries (`kafka-python`, `sqlite3`)
-- Test on Windows early, not as an afterthought
-
-### 2. Docker Networking Clarity
-- Containers see each other via service names: `redpanda-broker:9092`
-- Host machine sees containers via `localhost:9092`
-- Mix them up → hours of debugging
-
-### 3. Scope Discipline
-- Don't add features speculatively (Airflow wasn't needed)
-- Complete MVP first, optimize later
-- Each phase should be shippable independently
-
-### 4. Observability > Debugging
-- Prometheus + Grafana running early provided visibility into broker health
-- Saved time troubleshooting consumer lag
-- "If you can't see it, you can't fix it"
-
-### 5. Documentation as Design
-- Writing setup instructions exposed configuration complexity (Airflow)
-- Simpler architecture = simpler docs
-
-## Performance Metrics
-
-| Metric | Value |
-|--------|-------|
-| Messages/cycle | 3 (BTC, ETH, SOL) |
-| Cycle interval | 10 seconds |
-| Monthly throughput | ~86,400 messages |
-| Producer latency | <100ms |
-| Consumer latency | <50ms |
-| DB insert time | <10ms per message |
-| Storage (1 month) | ~50MB SQLite + ~100MB Prometheus |
-| CPU (idle) | <1% (producer/consumer), <5% (Redpanda) |
-| Memory (running) | 50MB + 30MB + 512MB + 512MB (total ~1GB) |
-
-## Tech Stack
-
-| Component | Technology | Rationale |
-|-----------|-----------|-----------|
-| **Language** | Python 3.11 | Rapid development, strong data libs |
-| **Message Broker** | Redpanda v24.1.1 | Kafka-compatible, low overhead |
-| **Database** | SQLite | Zero setup, ACID, sufficient scale |
-| **Monitoring** | Prometheus + Grafana | Industry standard, built-in Redpanda metrics |
-| **Containerization** | Docker Compose | Simple, reproducible, cross-platform |
-| **Development** | VS Code, PowerShell, Git | Windows-native workflow |
-
-## How to Run (Quick Start)
-
-```bash
-# Clone and setup
-git clone https://github.com/YOUR_USERNAME/crypto-streaming-pipeline.git
-cd crypto-streaming-pipeline
-python -m venv venv
-venv\Scripts\activate  # Windows
-pip install -r src/requirements.txt
-
-# Start infrastructure
-docker-compose up -d
-
-# Run pipeline (3 terminals)
-python src/producer.py
-python src/consumer.py
-python src/query.py
-
-# Monitor
-# Prometheus: http://localhost:9090
-# Grafana: http://localhost:3000 (admin/securepassword123)
-```
-
-For detailed setup, see [README_SETUP.md](./README_SETUP.md).
-
-## Project Status
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1-3 | Producer → Redpanda → Consumer → SQLite | ✅ Complete |
-| 4 | Airflow DAGs | ❌ Abandoned (over-engineered) |
-| 5 | Prometheus + Grafana monitoring | ✅ Complete |
-| 6 | GitHub Actions CI/CD | ⏳ Infrastructure ready |
-| 7 | Cloud deployment (VPS/Serverless) | 🔲 Planned |
-
-## Lessons for Future Work
-
-1. **Serverless functions** (AWS Lambda, Google Cloud Functions) instead of VPS for scheduled tasks
-2. **Time-series DB** (InfluxDB, TimescaleDB) instead of SQLite for analytics scale
-3. **Kafka Schema Registry** for message schema evolution
-4. **Integration tests** for producer/consumer idempotency
-5. **Alerting** (PagerDuty, Opsgenie) on pipeline failures
-
-## Repository Structure
-
-```
+Architecture
+CoinGecko API
+    ↓
+Producer (Python)
+    ↓
+Redpanda (Message Broker)
+    ↓
+Consumer (Python) + Slack Alerts
+    ↓
+SQLite (Data Storage)
+    ↓
+Query Analytics (Python) + Moving Averages
+    ↓
+Prometheus/Grafana (Monitoring & Dashboards)
+Tech Stack
+Language: Python 3.11
+Message Broker: Redpanda (Kafka-compatible)
+Database: SQLite
+Monitoring: Prometheus + Grafana
+Alerts: Slack Webhooks
+Containerization: Docker + Docker Compose
+CI/CD: GitHub Actions (setup)
+Project Structure
 crypto-streaming-pipeline/
 ├── src/
-│   ├── producer.py              # ~80 lines
-│   ├── consumer.py              # ~90 lines
-│   ├── query.py                 # ~60 lines
-│   └── requirements.txt
-├── docker-compose.yml           # Redpanda, Prometheus, Grafana
-├── .env                         # Secrets (git-ignored)
-├── .github/workflows/           # CI/CD skeleton
-├── README.md                    # This file (portfolio summary)
-├── README_SETUP.md              # Detailed setup instructions
-└── crypto.db                    # SQLite (git-ignored)
-```
+│   ├── producer.py          # Fetch crypto prices, publish to Redpanda
+│   ├── consumer.py          # Consume messages, store in SQLite, send Slack alerts
+│   ├── query.py             # Analytics queries: stats, moving averages, hourly agg
+│   └── requirements.txt      # Python dependencies
+├── docker-compose.yml       # Container orchestration (Redpanda, Prometheus, Grafana)
+├── .env                     # Environment variables (git-ignored)
+├── .github/workflows/       # GitHub Actions (CI/CD skeleton)
+└── README.md               # This file
+Quick Start
+Prerequisites
+Python 3.11+
+Docker + Docker Compose
+Git
+Installation
+Clone repository:
+bash
+git clone https://github.com/YOUR_USERNAME/crypto-streaming-pipeline.git
+cd crypto-streaming-pipeline
+Setup Python environment:
+bash
+python -m venv venv
 
-## Conclusion
+# Windows
+venv\Scripts\activate
 
-Project Gecko demonstrates:
-- ✅ End-to-end data pipeline design
-- ✅ Real-world troubleshooting (Windows Docker, dependency conflicts)
-- ✅ Observability architecture (Prometheus/Grafana)
-- ✅ Code quality (error handling, graceful shutdown)
-- ✅ Documentation and communication
+# macOS/Linux
+source venv/bin/activate
 
-This isn't a toy project—it's a **working, production-inspired system** that handles real data, demonstrates maturity in decision-making, and shows I can see something through from conception to completion.
+pip install -r src/requirements.txt
+Configure environment:
+bash
+# Create .env file
+cat > .env << EOF
+REDPANDA_BROKER=localhost:9092
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=securepassword123
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR_WEBHOOK_URL
+EOF
+Running
 
----
+Option 1: Docker Compose (Recommended)
 
-**Want to see it in action?** Clone the repo and run `docker-compose up -d`. In 30 seconds you'll have a live streaming pipeline with real-time monitoring dashboards.
+Start all services:
+
+bash
+docker-compose up -d
+
+Verify services:
+
+bash
+docker ps
+
+Option 2: Local Development (3 terminals)
+
+Terminal 1 — Producer:
+
+bash
+cd src
+python producer.py
+
+Terminal 2 — Consumer:
+
+bash
+cd src
+python consumer.py
+
+Terminal 3 — Query (one-time or periodic):
+
+bash
+cd src
+python query.py
+Features
+Producer (src/producer.py)
+Fetches crypto prices (BTC, ETH, SOL) from CoinGecko API every 10 seconds
+Publishes to Redpanda topic crypto-prices
+Timezone-aware timestamps (Asia/Jakarta)
+Error handling with exponential backoff
+Handles rate limiting gracefully (429 errors)
+Consumer (src/consumer.py)
+Consumes messages from Redpanda topic
+Stores in SQLite database (crypto.db) with atomic inserts
+Feature 1: Real-time Slack alerts on price changes >5%
+Automatic table creation on first run
+Consumer group tracking (offset management)
+Graceful shutdown (Ctrl+C)
+Query Analytics (src/query.py)
+Latest prices per symbol
+Price statistics: min, max, avg, range, data points
+Feature 2: Moving averages (1-hour & 4-hour MA)
+Hourly aggregation with trends (last 12 hours)
+Formatted output via tabulate
+Database Schema
+
+Table: crypto_prices
+
+sql
+id (INTEGER PRIMARY KEY AUTOINCREMENT)
+timestamp (TEXT)           -- ISO format timestamp
+symbol (TEXT)              -- BTC, ETH, SOL
+price (REAL)               -- Price in USD
+currency (TEXT)            -- Currency (USD)
+inserted_at (TIMESTAMP)    -- Auto-inserted at INSERT time
+Features in Depth
+Feature 1: Real-Time Slack Alerts
+
+Automatically sends Slack notifications when crypto price changes >5%.
+
+Setup:
+
+Create Slack workspace (or use existing): https://slack.com
+Create channel: #crypto-alerts
+Create Incoming Webhook:
+Go to https://api.slack.com/apps
+Create New App → Blank App
+Enable Incoming Webhooks
+Add webhook to #crypto-alerts
+Copy webhook URL
+Add to .env:
+   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../X...
+Run consumer—alerts trigger automatically:
+bash
+   python src/consumer.py
+
+Example Slack Alert:
+
+📈 BTC Price Alert
+6.10% change detected
+
+Previous: $77,800.00
+Current: $82,428.00
+2026-09-15 11:05:00
+
+How It Works:
+
+Consumer checks previous price in DB after each insert
+Calculates percent change
+If >5%: sends formatted Slack message
+Uses ✅ emoji for alerts (up/down arrows indicate direction)
+Feature 2: Moving Averages
+
+Calculates 1-hour and 4-hour moving averages for technical analysis.
+
+Usage:
+
+bash
+python src/query.py
+
+Output Includes:
+
+Latest Prices — Current price for each symbol
+Statistics — Min, max, avg, range, data points
+Moving Averages:
+1-Hour MA: Average price over last 60 minutes
+4-Hour MA: Average price over last 240 minutes
+Data points: How many prices in each window
+Hourly Aggregation — Bucketed stats per hour (last 12 hours)
+
+Example Output:
+
+🔄 MOVING AVERAGES
++----------+-------------+-------------+
+| Symbol   |   1-Hour MA |   4-Hour MA |
++==========+=============+=============+
+| BTC      |    78071.8  |    78071.8  |
+| ETH      |     2503.67 |     2503.67 |
+| SOL      |      101.71 |      101.71 |
++----------+-------------+-------------+
+
+Technical Details:
+
+Uses SQL window functions (AVG() with CASE statements)
+Filters by timestamp >= NOW() - N hours
+Handles data with sparse timestamps gracefully
+Useful for trend detection and strategy signals
+Monitoring with Prometheus + Grafana
+Prometheus
+Endpoint: http://localhost:9090
+Scrape interval: 15 seconds
+Data retention: 15 days
+Target: Redpanda metrics at redpanda-broker:9644
+
+Verify targets:
+
+bash
+curl http://localhost:9090/api/v1/targets
+Grafana
+Endpoint: http://localhost:3000
+Credentials: admin / securepassword123
+Pre-configured: Prometheus data source
+
+Access Dashboard:
+
+Go to http://localhost:3000
+Login with credentials above
+Dashboards → Redpanda Crypto Pipeline
+
+Dashboard Panels:
+
+Kafka Request Handlers: All request types (produce, fetch, offset_commit, etc.)
+Partition Count: Growing partition offsets
+Redpanda Uptime: Broker uptime tracking
+
+Available Metrics:
+
+Metric	Description
+vectorized_kafka_handler_requests_completed_total	Total Kafka requests by handler
+vectorized_storage_log_log_segments_active	Active log segments
+vectorized_cluster_partition_end_offset	Partition message count
+vectorized_application_uptime	Broker uptime (ms)
+process_resident_memory_bytes	Broker memory usage
+API Reference
+CoinGecko API
+Endpoint: https://api.coingecko.com/api/v3/simple/price
+Auth: None (public API)
+Rate limit: ~50 calls/minute (free tier)
+Used by: Producer every 10 seconds
+Redpanda
+Broker (local): localhost:9092
+Broker (Docker): redpanda-broker:9092
+Topic: crypto-prices
+Consumer Group: crypto-consumer-group
+Metrics port: 9644
+Prometheus
+Query endpoint: http://localhost:9090/api/v1/query
+Targets endpoint: http://localhost:9090/api/v1/targets
+Slack
+Webhook: Set via SLACK_WEBHOOK_URL env var
+Rate limit: Depends on Slack plan
+Troubleshooting
+Producer: "429 Too Many Requests"
+Cause: Hit CoinGecko rate limit (~50 calls/min)
+Solution: Wait 1-2 minutes, producer auto-reconnects
+Long-term: Reduce polling frequency or use paid API tier
+Consumer: "Unable to bootstrap from ['localhost:9092']"
+Cause: Redpanda not running or not fully started
+Solution:
+bash
+  docker ps  # Verify container running
+  docker-compose logs redpanda  # Check logs
+  docker-compose restart redpanda
+Consumer: "No such file or directory: crypto.db"
+Cause: SQLite hasn't created DB yet
+Solution: DB creates automatically on first run—just retry
+Grafana: "No data" in panels
+Cause: Prometheus needs 2-3 scrape cycles (~45 sec) to collect data
+Solution: Wait 1-2 minutes, then refresh Grafana
+Slack Alert Not Working
+Check:
+bash
+  # Verify webhook in .env
+  echo $SLACK_WEBHOOK_URL
+  
+  # Test webhook manually
+  curl -X POST -H 'Content-type: application/json' \
+    --data '{"text":"Test"}' \
+    $SLACK_WEBHOOK_URL
+Fix: Regenerate webhook at https://api.slack.com/apps
+Performance Metrics
+Metric	Value
+Messages/cycle	3 (BTC, ETH, SOL)
+Cycle interval	10 seconds
+Monthly throughput	~86,400 messages
+Producer latency	<100ms
+Consumer latency	<50ms
+Slack alert latency	<2 seconds
+DB insert time	<10ms per message
+Storage (1 month)	~50MB SQLite + ~100MB Prometheus
+CPU (idle)	<1% producer, <1% consumer, <5% Redpanda
+Memory	~50MB + 30MB + 512MB + 512MB (total ~1.1GB)
+Project Status
+Phase	Component	Status
+1-3	Core Pipeline (Producer/Consumer/Query)	✅ Complete
+4	Airflow Orchestration	❌ Abandoned (over-engineered)
+5	Prometheus + Grafana Monitoring	✅ Complete
+6	Feature 1: Slack Price Alerts	✅ Complete
+7	Feature 2: Moving Averages	✅ Complete
+8	Blog Post / Writeup	⏳ In Progress
+Key Design Decisions
+Why Redpanda over Kafka?
+Drop-in Kafka replacement
+Lower resource overhead
+Faster to stand up
+Sufficient for this scale
+Why SQLite?
+Zero setup
+ACID guarantees
+Built into Python
+Sufficient for ~100K messages/month
+Why Docker Compose?
+Simple, reproducible
+Works cross-platform
+Good for development + monitoring stack
+Why Slack Alerts?
+Real-time notifications
+Integrated workflow
+No separate infrastructure
+Better than polling
+Why Moving Averages?
+Technical analysis depth
+Shows SQL competency
+Useful for trend detection
+Portfolio value (data engineering)
+Learnings & Insights
+1. Windows Development Constraints
+Avoid C extension dependencies (confluent-kafka, DuckDB)
+Use pure Python libraries (kafka-python, sqlite3)
+Docker networking: localhost vs service names matter
+2. Over-Engineering Kills Momentum
+Airflow added complexity without value
+Simple polling + persistence is enough
+Ship MVP first, optimize later
+3. Observability Matters
+Prometheus + Grafana caught issues early
+Metrics visualization > debugging logs
+Worth setting up from day 1
+4. Real-Time Alerts > Polling
+Integrated alerts (in consumer) = better UX
+No need for separate scheduler
+Triggers immediately on price changes
+Future Enhancements
+ Serverless deployment (AWS Lambda, Google Cloud Functions)
+ Time-series DB (InfluxDB, TimescaleDB) for scale
+ Kafka Schema Registry for message evolution
+ Integration tests for producer/consumer idempotency
+ Email/SMS alerts in addition to Slack
+ Price predictions (ML model)
+ Multi-exchange support (Binance, Kraken)
+ Web dashboard (React/Vue frontend)
